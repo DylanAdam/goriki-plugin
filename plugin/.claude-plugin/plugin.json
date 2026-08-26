@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "goriki",
+  "version": "0.1.0",
+  "description": "The decision post for a solo builder. One install registers the Goriki MCP server, the three session hooks, the escalation skill and the commands.",
+  "author": {
+    "name": "Goriki"
+  },
+  "keywords": ["goriki", "kata", "decision", "gate"],
+  "userConfig": {
+    "goriki_url": {
+      "type": "string",
+      "title": "Goriki bridge address",
+      "description": "The address of your Goriki bridge, copied from the Connect Agent screen. It ends in /mcp.",
+      "required": true
+    },
+    "goriki_pat": {
+      "type": "string",
+      "title": "Goriki project token",
+      "description": "The project token you minted on the Connect Agent screen. Sent as an Authorization header; this plugin never writes it into a file of its own.",
+      "required": true,
+      "sensitive": true
+    }
+  }
+}

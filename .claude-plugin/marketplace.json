@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "goriki-plugin",
+  "description": "The one certified Goriki client package: the bridge to a builder's project, its session hooks, its escalation skill and its commands.",
+  "owner": {
+    "name": "Goriki"
+  },
+  "plugins": [
+    {
+      "name": "goriki",
+      "source": "./plugin",
+      "description": "The decision post for a solo builder. One install registers the Goriki MCP server, the three session hooks, the escalation skill and the commands."
+    }
+  ]
+}
