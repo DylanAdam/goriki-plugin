@@ -6,9 +6,7 @@ One install registers the MCP server, three hooks (SessionStart · PreToolUse ·
 
 ### 1. Mint a project token
 
-Create your account, create your Project, and mint a project token on the Connect Agent
-screen. That screen prints step 3 with your own address and token already in it — copy it from
-there. The token is shown once.
+Create your account, create your Project, and mint a project token on the Connect Agent screen. That screen prints step 3 with your own address and token already in it — copy it from there. The token is shown once.
 
 ### 2. Add the plugin marketplace
 
@@ -19,20 +17,20 @@ claude plugin marketplace add DylanAdam/goriki-plugin
 ### 3. Install it with your token
 
 ```
-claude plugin install goriki@goriki-plugin --config goriki_url=<your Goriki address>/mcp --config goriki_pat=<YOUR-TOKEN>
+claude plugin install goriki@goriki-plugin --config goriki_url="<your Goriki address>/mcp" --config goriki_pat="<YOUR-TOKEN>"
 ```
 
-You are done when the Connect Agent screen's line flips to "Last call: {tool} · {age}".
+You are done when the line under the three steps stops saying "Waiting for the first call…" and starts with "Last call:". What follows it is how long ago that call was, preceded by the name of the tool that made it when the session reports one.
 
 ## What it registers
 
 - the MCP server, registered as `plugin:goriki:goriki`. Its tools answer to
   `mcp__plugin_goriki_goriki__<tool>` — for example `mcp__plugin_goriki_goriki__goriki_context`;
 - three hooks: `SessionStart` · `PreToolUse` · `Stop`;
-- the escalation skill;
+- the escalation skill — how to hand a binding choice over instead of making it;
 - the commands.
 
-## It composes with what you already have
+## Your own hooks
 
 It composes with hooks you already have: nothing of yours is replaced, reordered or disabled, and where both rule on the same event, a deny of yours is never overridden.
 
@@ -50,11 +48,11 @@ claude plugin uninstall goriki
 
 Everything the plugin configured goes with it: hooks, the MCP registration, the skill and the commands. Nothing keeps running and nothing phones home.
 
-Two things are yours to close, because they are not the plugin's: revoke the project token where you minted it, and close out the managed block if you were given one.
+Two things are yours to close, because they are not the plugin's: revoke the project token in Settings — the Connect Agent screen's "Revoke & re-mint" would hand you a new live one — and close out the managed block if you were given one.
 
 ## The two values the install carries
 
 - `goriki_url` — your bridge's address. This product has no single address: it
   is wherever your Goriki runs, and the Connect Agent screen knows;
-- `goriki_pat` — your project token. It is held by Claude Code's own plugin
-  configuration; this plugin writes it into no file of its own.
+- `goriki_pat` — your project token.
+  It is held by Claude Code's own plugin configuration; this plugin writes it into no file of its own.

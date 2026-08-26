@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "goriki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The decision post for a solo builder. One install registers the Goriki MCP server, the three session hooks, the escalation skill and the commands.",
   "author": {
     "name": "Goriki"
