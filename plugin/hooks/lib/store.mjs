@@ -25,12 +25,26 @@
  * BLOCKING code: a broken disk would become a refusal this product never decided.
  */
 import process from 'node:process';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** The snapshot, and the queue of holes waiting for a call that succeeds. Two files, one directory. */
 const SNAPSHOT_FILE = 'freeze-snapshot.json';
 const GAPS_FILE = 'freeze-gaps.json';
+
+/**
+ * AND THE LOCK THE QUEUE IS MODIFIED UNDER — a DIRECTORY, and it lives beside the two files.
+ *
+ * `mkdir` is the one create-if-absent primitive that is atomic on every filesystem this plugin runs
+ * on, NTFS included: the call either creates the entry or fails with `EEXIST`, with no window in
+ * between for a second process to win the same race. There is no `O_EXCL` to reach for from this
+ * file's small vocabulary and no dependency to add (a plugin ships without `node_modules`), so the
+ * directory IS the mutex. It exists only while a call holds it — every path below releases it in a
+ * `finally`, and a run that leaves one behind would be caught by the guard in
+ * `pre-tool-use-hook.test.ts` that asserts this directory holds exactly the two files and nothing
+ * else.
+ */
+const GAPS_LOCK_DIR = 'freeze-gaps.lock';
 
 /**
  * SIXTY SECONDS, and the figure is borrowed on purpose.
@@ -143,6 +157,93 @@ function parseGapLine(line) {
 }
 
 /**
+ * ── THE LOCK, AND WHAT IT IS ALLOWED TO COST (B-83-2, ROUND 3 · 2026-09-02 · D103) ────────────────
+ *
+ * Two numbers and a staleness bound, and each of them is chosen against the same rule: this runs
+ * INSIDE a `PreToolUse` hook, on the critical path of somebody's tool call. A guardrail that made a
+ * builder wait would be a guardrail they turn off.
+ *
+ * - **BUDGET, 250 ms total.** The whole point of the wait is to survive the ordinary case — a
+ *   handful of hook processes from one turn, each holding the lock for one `appendFileSync` or one
+ *   read-and-rewrite of a file bounded at `GAPS_MAX` lines. That is microseconds of held time, so a
+ *   quarter of a second is many turns' worth of queueing. Past it the caller FAILS OPEN rather than
+ *   waits longer: see `queueGap` and `clearGaps` below for what each one does instead.
+ * - **SPIN, 5 ms.** Requested, not guaranteed — a timer on Windows rounds up to its own tick, which
+ *   makes the real spin coarser and the budget a ceiling on attempts rather than a promise of them.
+ *   Sleeping is `Atomics.wait` on a private buffer nobody else can see: the one way to pause a
+ *   SYNCHRONOUS function without burning a core, and no import.
+ * - **STALE, 2 s.** A hook that was killed mid-call — the client shut down, the machine slept, the
+ *   user hit escape — leaves its directory behind, and a lock nobody will ever release would freeze
+ *   this queue permanently. Two seconds is far longer than any call here can legitimately hold it
+ *   and far shorter than a person notices. Breaking a stale lock CAN, in principle, hand the queue
+ *   to two processes at once (the owner comes back from a two-second stall and finishes). SUPERSEDED
+ *   2026-09-02 (D41): "a duplicate line, never a lost one" is not quite the cost this file accepts
+ *   everywhere else any more — measured, one path is a genuine loss rather than a duplicate (see the
+ *   supersessions on `queueGap` and `clearGaps` below), reached only when a peer holds this same lock
+ *   past its own budget, and kept rather than closed for the reason those two give: the alternative
+ *   is making a fail-open append wait.
+ */
+const GAPS_LOCK_BUDGET_MS = 250;
+const GAPS_LOCK_SPIN_MS = 5;
+const GAPS_LOCK_STALE_MS = 2_000;
+
+/** Pause this synchronous call without spinning a core. A private buffer: nothing else waits on it. */
+function pause(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // A runtime that refuses to block here loses only the pause, never the caller's budget check.
+  }
+}
+
+/** Remove a lock whose owner is plainly gone. Any failure means somebody else got there first. */
+function breakStaleGapsLock(lock) {
+  try {
+    if (Date.now() - statSync(lock).mtimeMs > GAPS_LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true });
+  } catch {
+    // It vanished between the `mkdir` that failed and this `stat`, or it cannot be read. Either way
+    // the next attempt of the loop is the answer, not an error anybody hears about.
+  }
+}
+
+/**
+ * TAKE THE LOCK, or answer `false` — and the difference between those two answers is the whole
+ * fail-open guarantee, so the failures are told apart rather than lumped together.
+ *
+ * `EEXIST` is the ONLY failure that means *"somebody else holds it"*, and it is the only one worth
+ * waiting on. `ENOENT` (the directory the client named does not exist and could not be made) and
+ * `EACCES` (it exists and refuses us) are states where every subsequent attempt fails identically:
+ * spinning on them would spend the budget to reach the same answer, and — worse — a directory that
+ * cannot be created would read as *"held by another process"* forever. `dataDir()` deliberately does
+ * not create anything, so the creation happens HERE, before the lock, on every call.
+ */
+function acquireGapsLock(dir) {
+  const lock = join(dir, GAPS_LOCK_DIR);
+  const deadline = Date.now() + GAPS_LOCK_BUDGET_MS;
+  for (;;) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(lock);
+      return true;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') return false;
+    }
+    breakStaleGapsLock(lock);
+    if (Date.now() >= deadline) return false;
+    pause(GAPS_LOCK_SPIN_MS);
+  }
+}
+
+/** Give it back. In a `finally`, always, and a failure here is not a failure of the caller's work. */
+function releaseGapsLock(dir) {
+  try {
+    rmSync(join(dir, GAPS_LOCK_DIR), { recursive: true, force: true });
+  } catch {
+    // Already gone (a stale-breaker took it) or undeletable. The next caller's stale bound covers it.
+  }
+}
+
+/**
  * Remembers the exact bytes the last `readGaps()` call saw, so `clearGaps()` can remove PRECISELY
  * those — never the whole file — even if another process appended a new hole in between. This is
  * safe because the two are always called from the same run of `rule()` in `pre-tool-use.mjs`, in
@@ -182,16 +283,37 @@ export function readGaps() {
  * The write happens on the same run as the allow, so a session that ends immediately afterwards
  * still has the record on disk for the next one — *"journaled on return"* means the next successful
  * request, not the next moment of good luck.
+ *
+ * ── AND IT TAKES THE LOCK, BUT IT DOES NOT NEED IT (round 3, 2026-09-02) ──────────────────────────
+ *
+ * The append was already atomic against another append. What it was NOT protected against is a
+ * concurrent `clearGaps()`, which reads the file and writes back a remainder: a line appended
+ * between that read and that write is overwritten by it. So this side takes the lock too — that is
+ * the only way the other side's read-modify-write can be made to exclude it.
+ *
+ * When the lock cannot be had inside the budget, this appends ANYWAY. D103 decides it and it is not
+ * close: losing a hole is the failure this whole queue exists to prevent, and a duplicate is a line
+ * the register can dedupe against `packet_id` + `path`.
+ *
+ * SUPERSEDED 2026-09-02 (D41): the worst an unlocked append can meet is not that description any
+ * more — measured, it is this same append landing inside a concurrent `clearGaps()`'s own locked
+ * read and write (see the supersession on that function below), overwritten by the write it lands
+ * ahead of, reached only when a peer holds `GAPS_LOCK_DIR` past this call's own 250 ms budget, and
+ * kept rather than closed because closing it would give this fail-open append the very wait D103
+ * says it must not take.
  */
 export function queueGap(gap) {
   const dir = dataDir();
   if (dir === null) return false;
+  const held = acquireGapsLock(dir);
   try {
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, GAPS_FILE), `${JSON.stringify(gap)}${GAP_LINE_SEPARATOR}`, 'utf8');
     return true;
   } catch {
     return false;
+  } finally {
+    if (held) releaseGapsLock(dir);
   }
 }
 
@@ -224,6 +346,36 @@ export function queueGap(gap) {
  * round trip (a duplicate the register can dedupe against `packet_id` + `path`), which is a small,
  * visible waste — never the alternative this correction closes, a hole a builder was never told about
  * because a wipe destroyed it before any of the two processes could hand it to the register.
+ *
+ * ── SUPERSEDED 2026-09-02 (D41) — ROUND 2 CLOSED THE WIPE AND LEFT THE WINDOW OPEN ────────────────
+ *
+ * The paragraph above stands as written and is kept verbatim: the no-op on mismatch is still the
+ * belt, and it is still what stops a batch this process never read from being discarded. What it did
+ * NOT close is the gap between the `readFileSync` and the `writeFileSync` two lines apart in this
+ * very function. A THIRD process appending inside that window has its line read into `current` by
+ * nobody and written back by no one — the `slice` that follows was computed from bytes taken before
+ * the append, so the append is overwritten. Round 2 moved the loss from a wipe of the whole file to
+ * a wipe of one line, which is smaller and just as silent.
+ *
+ * MEASURED as a flake rather than as a repro, which is why it survived a round: the suite's own
+ * cross-process test (`pre-tool-use-hook.test.ts`, the round-2 describe) reddened FOUR times under
+ * load across two days and passed alone every time — `8.3-final-verify` § 5, then
+ * `8.9-final-verify`, whose words were *"the correction moved the problem, it did not solve it"*.
+ *
+ * ROUND 3 closes it with a lock rather than with a cleverer comparison, because there is no
+ * comparison to be clever with: the file can change between any two syscalls, and only mutual
+ * exclusion makes read-then-write one step. `queueGap` and this function both take
+ * `GAPS_LOCK_DIR`; `readGaps` does not, and does not need to — a stale read is still correct,
+ * because THIS function re-reads under the lock and no-ops on the mismatch that a stale read
+ * produces.
+ *
+ * SUPERSEDED 2026-09-02 (D41, same day): "a bounded duplicate, never a loss" was not quite the whole
+ * cost either — measured, an unlocked fail-open append from `queueGap` (see its own supersession
+ * above) landing between this function's read and its write is overwritten by that write, a genuine
+ * loss rather than a duplicate, bounded to the same regime as that one — a peer holding the lock past
+ * the 250 ms budget — and kept for the reason `queueGap`'s own comment gives: closing it would mean
+ * locking the one append this queue promises never to make anybody wait for. What retires this lock
+ * one day is the queue ceasing to be a file two processes share — nothing smaller.
  */
 export function clearGaps() {
   const dir = dataDir();
@@ -234,6 +386,14 @@ export function clearGaps() {
   // call knows it may remove, so it removes nothing. `pre-tool-use.mjs` never reaches this branch in
   // practice: it calls `clearGaps` only after `readGaps().length > 0`, which cannot be true here.
   if (consumed === null) return true;
+  /*
+   * The budget ran out with somebody else holding the queue. This does NOTHING — the opposite
+   * choice from `queueGap`'s, and for the same reason: the lines this call would have removed are
+   * lines the register has already accepted, so leaving them costs one re-POST on the next round
+   * trip, while removing them without exclusion is how a hole disappears. Fail-open here means
+   * *"do not touch it"*, and it answers like the other no-op branches: nothing failed.
+   */
+  if (!acquireGapsLock(dir)) return true;
   try {
     const current = readFileSync(join(dir, GAPS_FILE), 'utf8');
     // A mismatch means the file moved on since this process's own `readGaps()` — leave it untouched
@@ -243,5 +403,7 @@ export function clearGaps() {
     return true;
   } catch {
     return false;
+  } finally {
+    releaseGapsLock(dir);
   }
 }

@@ -40,3 +40,8 @@ plugin/commands/contest.md text eol=lf
 # against its generator. The stored blob was LF; main's checkout at the merge wrote it out CRLF,
 # and the gate went red on content nobody had touched. Same pin, same reason.
 plugin/commands/statusline.md text eol=lf
+# 0.5.1 (2026-09-30) — every shipped text file is LF on every machine: the documents and skills added since 0.3.0
+# (commands/phase.md, commands/start.md, skills/goriki-phase, skills/goriki-start) join the pins above by rule, not one by one.
+plugin/**/*.md text eol=lf
+plugin/**/*.mjs text eol=lf
+plugin/**/*.json text eol=lf

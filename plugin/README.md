@@ -31,11 +31,13 @@ You are done when the line under the three steps stops saying "Waiting for the f
 - 4 hooks: `SessionStart` · `PreToolUse` · `Stop` · `PreCompact`;
 - the escalation skill — how to hand a binding choice over instead of making it;
 - the managed-block skill — how to write the sealed Rules into the files your agents already read;
+- the entry skill — run `/goriki:start` and a sentence about what you want to build becomes a plan, in five questions; the skill also opens on its own when what you want is clear;
+- the phase skill — run `/goriki:phase` and the questions of the phase you are in get asked one at a time, in your terminal; the skill also opens on its own when the intention is clear;
 - and it OFFERS a status line — `/goriki:statusline` prints the configuration to
   paste and writes nothing, so nothing of yours is replaced;
 - the commands.
 
-SessionStart calls your Goriki at the start of every session and injects your sealed Rules and pending decisions before the first turn — and starts the session anyway if it cannot · PreToolUse refuses writes inside the zones your unsealed CRITICAL decisions froze, naming the decision and its link — and lets the write through if it cannot reach your Goriki · Stop is registered and silent · PreCompact re-serves your sealed Rules into the session each time it is compacted — and lets the compaction through untouched if it cannot reach your Goriki.
+SessionStart calls your Goriki at the start of every session and injects your sealed Rules and pending decisions before the first turn — and starts the session anyway if it cannot · PreToolUse refuses writes inside the zones your unsealed CRITICAL decisions froze, naming the decision and its link — and lets the write through if it cannot reach your Goriki · Stop reminds you once when a session tries to end over an unsealed CRITICAL — with the decision, its question and its link — then lets the session close and records it; and it holds nothing at all if it cannot reach your Goriki · PreCompact re-serves your sealed Rules into the session each time it is compacted — and lets the compaction through untouched if it cannot reach your Goriki.
 
 ## Your own hooks
 

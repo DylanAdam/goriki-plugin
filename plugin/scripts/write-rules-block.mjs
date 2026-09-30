@@ -28,7 +28,6 @@
  * plugin configuration; this script reads it, sends it in one header, and never writes it anywhere.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 
@@ -41,6 +40,19 @@ import {
   resolveRepoDir,
   validateAgentRulesBlockPayload,
 } from './lib/rules-block-client.mjs';
+/*
+ * MOVED OUT OF THIS FILE, 2026-09-02, Story 8.8 (D41 — the addition names its retraction).
+ *
+ * `readConfig()` and its `searchConfig()` helper stood here, with the measurement of 2026-08-28
+ * that found the two values in two different files. Story 8.8 ships a second script that needs the
+ * same two values by the same route, so the function moved WHOLE — measurement, bounds and silence
+ * included — into `./lib/plugin-config.mjs`, and both scripts import it. A copied search is two
+ * searches of one store, and they diverge the first time a client version moves a key.
+ *
+ * Nothing about the behaviour of this script changed: same order, same four candidates, same
+ * bounded depth, same refusal to print what it finds.
+ */
+import { readPluginConfig } from './lib/plugin-config.mjs';
 
 const ROUTE_PATH = '/api/agent/rules-block';
 const REQUEST_TIMEOUT_MS = 5000;
@@ -110,74 +122,6 @@ function resolveDir(args) {
   return resolved.dir;
 }
 
-/**
- * THE TWO VALUES THE INSTALL CARRIES, found without either of them ever being typed by a person.
- *
- * The environment is asked FIRST and it is the documented route: `GORIKI_URL` and `GORIKI_PAT`. The
- * client's own configuration store is asked second, because `claude plugin install --config` writes
- * the two `userConfig` values there and asking the builder to re-type a token they already gave the
- * client would be a worse experience than this search.
- *
- * ── WHERE THE CLIENT PUTS THEM — MEASURED 2026-08-28, Claude Code 2.1.246, Windows 11 ───────────
- *
- * A real install with `--config goriki_url=… --config goriki_pat=…`, then the tree read back with
- * the values never printed. The two values are NOT in one place, and that is the whole point of the
- * `sensitive: true` flag the manifest declares on the token:
- *
- *     settings.json      pluginConfigs > goriki@goriki-plugin > options > goriki_url
- *     .credentials.json  pluginSecrets > goriki@goriki-plugin > goriki_pat
- *
- * The first draft of this function looked for ONE object carrying BOTH keys and would have found
- * nothing, forever, in silence. It is written down here rather than in a report because the next
- * client version may move them: whoever reads this next needs the shape that was measured, and the
- * date it was measured on.
- *
- * The search is BOUNDED, it reads only the client's own configuration directory, and it never
- * prints what it finds. If neither route answers, the script says what is missing and stops — it
- * does not guess an address, and it does not go looking for a credential anywhere else.
- */
-function readConfig() {
-  const fromEnv = {
-    url: process.env.GORIKI_URL ?? null,
-    pat: process.env.GORIKI_PAT ?? null,
-  };
-  if (fromEnv.url !== null && fromEnv.pat !== null) return { ...fromEnv, source: 'environment' };
-
-  const root = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
-  const candidates = [
-    join(root, 'settings.json'),
-    join(root, '.credentials.json'),
-    join(root, 'plugins', 'config.json'),
-    join(root, 'config.json'),
-  ];
-  let url = fromEnv.url;
-  let pat = fromEnv.pat;
-  for (const candidate of candidates) {
-    if (url !== null && pat !== null) break;
-    if (!existsSync(candidate)) continue;
-    let document;
-    try {
-      document = JSON.parse(readFileSync(candidate, 'utf8'));
-    } catch {
-      continue;
-    }
-    url = url ?? searchConfig(document, 'goriki_url', 0);
-    pat = pat ?? searchConfig(document, 'goriki_pat', 0);
-  }
-  return { url, pat, source: url === null || pat === null ? null : 'client configuration' };
-}
-
-/** The first value this document holds under that exact key. Depth-bounded, never printed. */
-function searchConfig(node, key, depth) {
-  if (depth > 6 || node === null || typeof node !== 'object') return null;
-  if (typeof node[key] === 'string' && node[key].length > 0) return node[key];
-  for (const value of Object.values(node)) {
-    const found = searchConfig(value, key, depth + 1);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
 /** Today, as the closing line dates it. Local date, because the builder reads it in their own day. */
 function today(now) {
   const pad = (value) => String(value).padStart(2, '0');
@@ -189,7 +133,7 @@ const record = (line) => say.push(line);
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const config = readConfig();
+  const config = readPluginConfig();
 
   if (config.url === null || config.pat === null) {
     record(

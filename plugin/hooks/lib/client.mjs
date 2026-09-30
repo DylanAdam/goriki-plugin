@@ -26,6 +26,14 @@ import process from 'node:process';
 const FREEZE_PATH = '/api/agent/freeze';
 const GAPS_PATH = '/api/agent/freeze/gaps';
 const CONTEST_PATH = '/api/agent/freeze/contest';
+/**
+ * The session family's ONE address — `AGENT_STOP_PATH` in the API. Story 8.4, 2026-09-05.
+ *
+ * Exported, unlike the three above, because a gate compares it to the API's own constant: this
+ * string is typed in two files that can never import each other, and its drift would be a hook
+ * posting a bearer token at a path nobody serves.
+ */
+export const STOP_PATH = '/api/agent/session/stop';
 
 /**
  * TWO SECONDS, and the hook's declared `timeout` is ten.
@@ -223,4 +231,28 @@ export async function postContest(origin, token, reference) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ reference }),
   });
+}
+
+/**
+ * THE STOP COUNTER, ASKED — Story 8.4, 2026-09-05. One question, at the end of a session.
+ *
+ * **No body, and no session id.** The endpoint's own header says why: *"The hook sends nothing but
+ * its bearer. No session id, no body, no project"* — the PAT names one Project (D40) and the server
+ * resolves *the open Session of this PAT* itself. An id an agent never has to hold is an id an agent
+ * cannot get wrong, and carrying one would need the state D71 says a hook does not have.
+ *
+ * `ABORT_MS` is reused rather than given a budget of its own ([PROP-84-10] (a), memo 84-10): one
+ * constant for the whole plugin, and if a measurement ever shows two seconds is not enough for this
+ * call the new number comes from that measurement, never from an argument.
+ *
+ * ── AND A 503 IS AN `unreachable`, WHICH MEANS THE SESSION CLOSES ─────────────────────────────
+ *
+ * `agent_session_unavailable` is the named 503 the endpoint answers when the Session is open in the
+ * log and its operational row is not — and `reasonFor` folds it, with every other 5xx, into
+ * `unreachable`. The hook then writes nothing and the session ends. That is D103 read at the
+ * CLOSING of a session rather than at a write: a hook that could not be answered holds nobody. The
+ * sixty-minute sweep still owns the floor and gives that session its terminal.
+ */
+export async function postStopBlock(origin, token) {
+  return call(origin, token, STOP_PATH, { method: 'POST' });
 }
